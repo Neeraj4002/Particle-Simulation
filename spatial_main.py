@@ -56,7 +56,7 @@ class HiveMind:
     def __init__(self, num_bots: int):
         self.num_bots = num_bots
         self.bots = [Bot() for _ in range(num_bots)]
-        self.shapes = ["sphere", "wall", "ring", "cube", "rim"]
+        self.shapes = ["sphere", "wall", "ring", "cube", "rim", "tokamak", "arc_reactor"]
         self.shape_idx = 0
         self.command_shape = self.shapes[self.shape_idx]
         self.spatial_hash = SpatialHash(cell_size=1.0) # Larger than repel_radius
@@ -160,6 +160,70 @@ class HiveMind:
             targets.append([0.0, 0.0, 0.0])
         return targets[:self.num_bots]
 
+    def generate_tokamak_targets(self):
+        targets = []
+        R = 15.0  # Major radius
+        r = 5.0   # Minor radius
+        for _ in range(self.num_bots):
+            u = random.uniform(0, 2 * math.pi)
+            v = random.uniform(0, 2 * math.pi)
+            x = (R + r * math.cos(v)) * math.cos(u)
+            z = (R + r * math.cos(v)) * math.sin(u)
+            y = r * math.sin(v)
+            targets.append([x, y, z])
+        return targets
+
+    def generate_arc_reactor_targets(self):
+        targets = []
+        core_bots = int(self.num_bots * 0.20)
+        inner_ring_bots = int(self.num_bots * 0.40)
+        outer_ring_bots = int(self.num_bots * 0.25)
+        strut_bots = self.num_bots - core_bots - inner_ring_bots - outer_ring_bots
+        
+        # 1. Glowing Core (dense sphere)
+        for _ in range(core_bots):
+            theta = random.uniform(0, 2 * math.pi)
+            phi = math.acos(random.uniform(-1, 1))
+            r = random.uniform(0.0, 4.0)
+            x = r * math.sin(phi) * math.cos(theta)
+            y = r * math.sin(phi) * math.sin(theta)
+            z = r * math.cos(phi)
+            # Flatten slightly on Z
+            targets.append([x, y, z * 0.5])
+            
+        # 2. Inner Ring (thick and compact)
+        for _ in range(inner_ring_bots):
+            theta = random.uniform(0, 2 * math.pi)
+            r = random.uniform(8.0, 11.0)
+            z = random.uniform(-1.5, 1.5)
+            targets.append([r * math.cos(theta), r * math.sin(theta), z])
+            
+        # 3. Outer Ring (thin)
+        for _ in range(outer_ring_bots):
+            theta = random.uniform(0, 2 * math.pi)
+            r = random.uniform(16.0, 17.5)
+            z = random.uniform(-1.0, 1.0)
+            targets.append([r * math.cos(theta), r * math.sin(theta), z])
+            
+        # 4. Struts (connecting inner and outer rings)
+        num_struts = 10
+        bots_per_strut = max(1, strut_bots // num_struts)
+        for s in range(num_struts):
+            angle = (s / num_struts) * 2 * math.pi
+            for i in range(bots_per_strut):
+                f = i / bots_per_strut
+                r = 11.0 + f * (16.0 - 11.0)
+                z = random.uniform(-0.5, 0.5)
+                # Scatter slightly along the strut width
+                p_angle = angle + random.uniform(-0.02, 0.02)
+                targets.append([r * math.cos(p_angle), r * math.sin(p_angle), z])
+                
+        # Fill remainder with center points if any are lost due to rounding
+        while len(targets) < self.num_bots:
+            targets.append([0.0, 0.0, 0.0])
+            
+        return targets[:self.num_bots]
+
     def generate_text_targets(self):
         # 1. Create a 2D blank canvas
         img = Image.new('1', (150, 40), color=0)
@@ -208,6 +272,10 @@ class HiveMind:
             targets = self.generate_cube_targets()
         elif self.command_shape == "text":
             targets = self.generate_text_targets()
+        elif self.command_shape == "tokamak":
+            targets = self.generate_tokamak_targets()
+        elif self.command_shape == "arc_reactor":
+            targets = self.generate_arc_reactor_targets()
         else:
             targets = self.generate_rim_targets()
             
