@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Spatial Partitioning Sim (Instanced)</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background: #111; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 20px; color: #00aaff; }
+        p { margin: 0; font-size: 14px; color: #ccc; }
+        .controls { margin-top: 10px; display: flex; gap: 5px; flex-wrap: wrap; }
+        button {
+            background: #00aaff; color: #111; border: none; padding: 6px 12px;
+            border-radius: 4px; cursor: pointer; font-weight: bold;
+        }
+        button:hover { background: #0088cc; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h1>Hive Mind (Spatial Hash): <span id="status" style="color: #ffaa00;">Connecting...</span></h1>
+        <p>Current Formation: <strong id="formationLabel">Sphere</strong></p>
+        <p>Bot Count: <strong>1000</strong> (O(N) Complexity)</p>
+        <div class="controls">
+            <button onclick="setShape('sphere')">Sphere</button>
+            <button onclick="setShape('wall')">Wall</button>
+            <button onclick="setShape('ring')">Ring</button>
+            <button onclick="setShape('cube')">Cube</button>
+            <button onclick="setShape('rim')" style="background: #ff5500;">Car Rim</button>
+        </div>
+        <div class="controls" style="margin-top: 8px;">
+            <input type="text" id="textInput" placeholder="Word..." style="background: rgba(255,255,255,0.1); border: 1px solid #555; color: white; padding: 5px; border-radius: 4px; width: 100px;">
+            <button onclick="sendText()" style="background: #00ff88; color: black;">Form Text</button>
+        </div>
+        <p style="margin-top: 10px;"><em>Drag to rotate | Scroll to zoom</em></p>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050510);
+        scene.fog = new THREE.Fog(0x050510, 40, 150);
+        
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 30); // Moved camera closer
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.zoomSpeed = 2.0; // Make zooming much easier and twice as fast
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        
+        // Main white light
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(-10, 20, -10);
+        scene.add(dirLight);
+        
+        // Blue ambient/fill light from the other side
+        const dirLight2 = new THREE.DirectionalLight(0x0066ff, 1.5);
+        dirLight2.position.set(10, 0, 10);
+        scene.add(dirLight2);
+
+        const gridHelper = new THREE.GridHelper(100, 100, 0x00ffff, 0x112233);
+        gridHelper.position.y = -20;
+        scene.add(gridHelper);
+
+        // InstancedMesh for HIGH performance (rendering 2000 meshes in 1 draw call)
+        const maxBots = 1000;
+        // Square/Cube particles
+        const geometry = new THREE.BoxGeometry(0.4, 0.4, 0.4);
+
+        const material = new THREE.MeshStandardMaterial({ 
+            color: 0xffffff, roughness: 0.2, metalness: 0.8, emissive: 0x222233 
+        });
+        
+        const instancedMesh = new THREE.InstancedMesh(geometry, material, maxBots);
+        
+        // Create an array buffer for per-instance color
+        const colorArray = new Float32Array(maxBots * 3);
+        const colorAttribute = new THREE.InstancedBufferAttribute(colorArray, 3);
+        instancedMesh.instanceColor = colorAttribute;
+        scene.add(instancedMesh);
+
+        let targetPositions = Array.from({length: maxBots}, () => new THREE.Vector3(0, -20, 0));
+        let currentPositions = Array.from({length: maxBots}, () => new THREE.Vector3(0, -20, 0));
+
+        const dummy = new THREE.Object3D();
+        const tmpColor = new THREE.Color();
+
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        const statusEl = document.getElementById('status');
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.positions) {
+                for (let i = 0; i < data.positions.length && i < maxBots; i++) {
+                    const pos = data.positions[i];
+                    targetPositions[i].set(pos.x, pos.y, pos.z);
+                }
+            }
+        };
+
+        ws.onopen = () => {
+            statusEl.innerText = "Connected";
+            statusEl.style.color = "#00ffaa";
+        };
+        ws.onclose = () => {
+            statusEl.innerText = "Disconnected";
+            statusEl.style.color = "#ff4444";
+        };
+
+        window.setShape = function(shapeName) {
+            fetch(`/set_shape/${shapeName}`)
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('formationLabel').innerText = data.shape.charAt(0).toUpperCase() + data.shape.slice(1);
+                });
+        };
+
+        window.sendText = function() {
+            const txt = document.getElementById('textInput').value || 'HELLO';
+            fetch(`/set_text/${txt}`)
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('formationLabel').innerText = data.shape.charAt(0).toUpperCase() + data.shape.slice(1);
+                });
+        };
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            for (let i = 0; i < maxBots; i++) {
+                currentPositions[i].lerp(targetPositions[i], 0.2);
+                dummy.position.copy(currentPositions[i]);
+                dummy.updateMatrix();
+                instancedMesh.setMatrixAt(i, dummy.matrix);
+
+                // Simple color logic: blue when flying, white when docked
+                const dist = currentPositions[i].distanceTo(targetPositions[i]);
+                
+                if (dist > 1.0) {
+                    tmpColor.setHex(0x0055ff);  // Blue when flying
+                } else {
+                    tmpColor.setHex(0xffffff);  // White when docked 
+                }
+                tmpColor.toArray(colorArray, i * 3);
+            }
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            instancedMesh.instanceColor.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>

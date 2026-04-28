@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Nanobot Sim</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background: #111; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 20px; color: #00aaff; }
+        p { margin: 0; font-size: 14px; color: #ccc; }
+        .controls { margin-top: 10px; display: flex; gap: 5px; flex-wrap: wrap; }
+        button {
+            background: #00aaff; color: #111; border: none; padding: 6px 12px;
+            border-radius: 4px; cursor: pointer; font-weight: bold;
+        }
+        button:hover { background: #0088cc; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h1>Hive Mind Link: <span id="status" style="color: #ffaa00;">Connecting...</span></h1>
+        <p>Current Formation: <strong id="formationLabel">Sphere</strong></p>
+        <div class="controls">
+            <button onclick="setShape('sphere')">Sphere</button>
+            <button onclick="setShape('wall')">Wall</button>
+            <button onclick="setShape('ring')">Ring</button>
+            <button onclick="setShape('cube')">Cube</button>
+        </div>
+        <p style="margin-top: 10px;"><em>Drag to rotate camera | Scroll to zoom</em></p>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // 1. Setup Scene, Camera, Renderer
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        scene.fog = new THREE.Fog(0x111111, 20, 100);
+        
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 30);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // 2. Lighting & Environment
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Ground Grid
+        const gridHelper = new THREE.GridHelper(50, 50, 0x444444, 0x222222);
+        gridHelper.position.y = -10;
+        scene.add(gridHelper);
+
+        // 3. Nanobot Material & Geometry
+        const geometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+        const baseMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x00aaff,
+            roughness: 0.2,
+            metalness: 0.8
+        });
+        
+        let nanobots = [];
+        const maxBots = 512;
+        let targetPositions = []; // For smooth interpolation
+        let botStates = []; // Keep track of the state (0, 1, 2)
+
+        // Initialize empty meshes
+        for (let i = 0; i < maxBots; i++) {
+            // Clone the material so each bot can have a dynamic color
+            const botMaterial = baseMaterial.clone();
+            const mesh = new THREE.Mesh(geometry, botMaterial);
+            mesh.position.set(0, -10, 0); // Start at bottom
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            nanobots.push(mesh);
+            targetPositions.push(new THREE.Vector3(0, -10, 0));
+            botStates.push(0);
+        }
+
+        // 4. WebSocket Connection
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        const statusEl = document.getElementById('status');
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.positions) {
+                // Update target positions for interpolation and apply state styles
+                for (let i = 0; i < data.positions.length && i < maxBots; i++) {
+                    const pos = data.positions[i];
+                    targetPositions[i].set(pos.x, pos.y, pos.z);
+                    
+                    // Update state visually if it has changed
+                    if (botStates[i] !== pos.s) {
+                        botStates[i] = pos.s;
+                        
+                        // 0 = Free Floating (Cyan), 1 = Locked (Metallic Grey), 2 = Load-bearing (Glowing Orange)
+                        if (pos.s === 2) {
+                            nanobots[i].material.color.setHex(0xffaa00);
+                            nanobots[i].material.emissive.setHex(0x552200);
+                        } else if (pos.s === 1) {
+                            nanobots[i].material.color.setHex(0x888888);
+                            nanobots[i].material.emissive.setHex(0x000000);
+                        } else {
+                            nanobots[i].material.color.setHex(0x00aaff);
+                            nanobots[i].material.emissive.setHex(0x001133);
+                        }
+                    }
+                }
+            }
+        };
+
+        ws.onopen = () => {
+            statusEl.innerText = "Connected";
+            statusEl.style.color = "#00ffaa";
+        };
+        ws.onclose = () => {
+            statusEl.innerText = "Disconnected";
+            statusEl.style.color = "#ff4444";
+        };
+
+        // User interaction: Buttons
+        window.setShape = function(shapeName) {
+            fetch(`/set_shape/${shapeName}`)
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('formationLabel').innerText = data.shape.charAt(0).toUpperCase() + data.shape.slice(1);
+                });
+        };
+
+        // 5. Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            controls.update();
+
+            // Smooth interpolation (Lerp) towards the target positions sent from backend
+            for (let i = 0; i < maxBots; i++) {
+                nanobots[i].position.lerp(targetPositions[i], 0.2);
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
